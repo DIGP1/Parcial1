@@ -5,23 +5,18 @@ DECLARE
     v_nivel_bioseg  INT;
     v_rango         VARCHAR(100);
 BEGIN
-    -- Obtener nivel de bioseguridad del laboratorio que se intenta reservar
     SELECT nivel_bioseguridad
     INTO v_nivel_bioseg
     FROM laboratorio
     WHERE id_laboratorio = NEW.id_laboratorio;
 
-    -- Si es nivel 4, verificar el rango del investigador
     IF v_nivel_bioseg = 4 THEN
-        
-        -- Join corregido usando rango_investigador y id_rango
         SELECT ri.nombre_rango
         INTO v_rango
         FROM investigador i
         JOIN rango_investigador ri ON i.id_rango = ri.id_rango
         WHERE i.id_investigador = NEW.id_investigador;
 
-        -- Usamos LIKE para que acepte 'Director' o 'Director de Proyecto'
         IF v_rango NOT LIKE '%Director%' THEN
             RAISE EXCEPTION
                 'Acceso denegado: el laboratorio id=% es de Nivel 4. Solo un Director puede reservarlo. Rango actual: %',
@@ -45,7 +40,6 @@ CREATE OR REPLACE TRIGGER trg_verificar_nivel4
 CREATE OR REPLACE FUNCTION fn_registrar_auditoria()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Inserción corregida para coincidir con la estructura de log_auditoria
     INSERT INTO log_auditoria (
         usuario_db,
         fecha_hora,
@@ -57,13 +51,13 @@ BEGIN
         CURRENT_USER,   
         NOW(),          
         TG_OP,          
-        TG_TABLE_NAME, -- Función nativa que detecta el nombre de la tabla ('reserva')
+        TG_TABLE_NAME,
         FORMAT(
             'Reserva creada: id_reserva=%s | investigador_id=%s | laboratorio_id=%s | fecha=%s | horario: %s a %s',
             NEW.id_reserva,
             NEW.id_investigador,
             NEW.id_laboratorio,
-            NEW.fecha_reserva, -- Columnas corregidas
+            NEW.fecha_reserva,
             NEW.hora_inicio,
             NEW.hora_fin
         )
@@ -78,3 +72,31 @@ CREATE OR REPLACE TRIGGER trg_registrar_auditoria
     ON reserva
     FOR EACH ROW
     EXECUTE FUNCTION fn_registrar_auditoria();
+
+CREATE OR REPLACE FUNCTION fn_verificar_superposicion()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_conflictos INT;
+BEGIN
+    SELECT COUNT(*)
+    INTO v_conflictos
+    FROM reserva
+    WHERE id_investigador = NEW.id_investigador
+      AND fecha_reserva = NEW.fecha_reserva
+      AND (NEW.hora_inicio < hora_fin AND NEW.hora_fin > hora_inicio);
+
+    IF v_conflictos > 0 THEN
+        RAISE EXCEPTION 
+            'Conflicto de horario: El investigador id=% ya tiene una reserva en la fecha % que se superpone con el horario de % a %.',
+            NEW.id_investigador, NEW.fecha_reserva, NEW.hora_inicio, NEW.hora_fin;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_verificar_superposicion
+    BEFORE INSERT OR UPDATE
+    ON reserva
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_verificar_superposicion();
